@@ -1,0 +1,73 @@
+name: Build and publish macOS all-sources
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/macos-allsources-release.yml
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag
+        required: true
+        default: v0.2.56-zhenguojian-macos
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-allsources-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/go.mod
+          cache-dependency-path: native/go.sum
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.4'
+          channel: stable
+          cache: true
+      - name: Build all-sources macOS app
+        run: python3 scripts/build_macos.py --all-sources
+      - name: Verify Apple Silicon slices
+        run: |
+          APP=build/macos/Build/Products/Release/duanju_app.app
+          BINARY=$(find "$APP/Contents/MacOS" -maxdepth 1 -type f | head -1)
+          echo "Runner architecture: $(uname -m)"
+          echo "App binary: $(lipo -archs "$BINARY")"
+          echo "Go core: $(lipo -archs "$APP/Contents/Frameworks/libduanju_core.dylib")"
+          lipo -archs "$BINARY" | grep -q arm64
+          lipo -archs "$APP/Contents/Frameworks/libduanju_core.dylib" | grep -q arm64
+          ls -lh dist/macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zhenguojian-macos
+          path: dist/macos/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.2.56-zhenguojian-macos' }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          FILES=$(ls dist/macos/*.zip dist/macos/SHA256SUMS.txt)
+          if gh release view "$RELEASE_TAG" -R "$REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" $FILES -R "$REPOSITORY" --clobber
+          else
+            gh release create "$RELEASE_TAG" $FILES -R "$REPOSITORY" --target "$RELEASE_SHA" \
+              --title "真果鉴 macOS Apple Silicon $RELEASE_TAG" \
+              --notes "真果鉴（--all-sources 全站源版）macOS 包，应用与 Go 核心均含 arm64 切片，Apple Silicon 原生运行。未签名，首次打开需执行 xattr -cr <app>。附 SHA256SUMS.txt。"
+          fi
+          gh release view "$RELEASE_TAG" -R "$REPOSITORY" --json url,tagName,assets
